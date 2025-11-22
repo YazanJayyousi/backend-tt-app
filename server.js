@@ -1,111 +1,110 @@
+// server.js
 const express = require("express");
 const cors = require("cors");
 
 const app = express();
 app.use(express.json());
-app.use(cors());
 
-// --- In-Memory Database (later we move to real DB) ---
+// Allow frontend to connect
+app.use(cors({
+  origin: "http://localhost:5173", // frontend URL
+  credentials: true
+}));
+
+// --- In-Memory Database ---
 let queue = [];            // students waiting
 let currentMatch = null;   // { player1, player2 }
 let leaderboard = {};      // { studentID: { wins, losses } }
 
-// --- Helper Function ---
+// --- Helper Functions ---
 function recordResult(winner, loser) {
-    if (!leaderboard[winner]) leaderboard[winner] = { wins: 0, losses: 0 };
-    if (!leaderboard[loser]) leaderboard[loser] = { wins: 0, losses: 0 };
-    leaderboard[winner].wins++;
-    leaderboard[loser].losses++;
+  if (!leaderboard[winner]) leaderboard[winner] = { wins: 0, losses: 0 };
+  if (!leaderboard[loser]) leaderboard[loser] = { wins: 0, losses: 0 };
+  leaderboard[winner].wins++;
+  leaderboard[loser].losses++;
 }
 
 // --- API ROUTES ---
 
-// Login (temporary simple example)
+// Login (temporary example)
 app.post("/login", (req, res) => {
-    const { studentID } = req.body;
+  const { studentID } = req.body;
+  if (!studentID) return res.status(400).json({ error: "Student ID required" });
+  return res.json({ message: "Logged in", studentID });
+});
 
-    if (!studentID) return res.status(400).json({ error: "Student ID required" });
+// Get current match
+app.get("/match/current", (req, res) => {
+  res.json(currentMatch || {});
+});
 
-    return res.json({ message: "Logged in", studentID });
+// Get current queue
+app.get("/queue", (req, res) => {
+  res.json(queue.map(studentID => ({ studentID })));
 });
 
 // Join queue
 app.post("/queue/join", (req, res) => {
-    const { studentID } = req.body;
-
-    if (queue.includes(studentID))
-        return res.status(400).json({ error: "Already in queue" });
-
-    queue.push(studentID);
-    return res.json({ queue });
+  const { studentID } = req.body;
+  if (!studentID) return res.status(400).json({ error: "Student ID required" });
+  if (queue.includes(studentID) || (currentMatch && (studentID === currentMatch.player1 || studentID === currentMatch.player2)))
+    return res.status(400).json({ error: "Already in queue or playing" });
+  queue.push(studentID);
+  res.json(queue.map(studentID => ({ studentID })));
 });
 
-// Leave queue manually
-app.post("/queue/leave", (req, res) => {
-    const { studentID } = req.body;
+// Leave table (for player/winner)
+app.post("/match/leave", (req, res) => {
+  const { studentID } = req.body;
+  if (!currentMatch) return res.status(400).json({ error: "No match running" });
 
-    queue = queue.filter(id => id !== studentID);
-    return res.json({ queue });
+  const { player1, player2 } = currentMatch;
+  if (studentID !== player1 && studentID !== player2)
+    return res.status(400).json({ error: "You are not in the current match" });
+
+  // Remove current match
+  currentMatch = null;
+
+  // Put loser back to queue if exists
+  const loser = studentID === player1 ? player2 : player1;
+  if (loser) queue.unshift(loser);
+
+  res.json({ message: "Left table", queue });
 });
 
-// Get current queue + match
-app.get("/status", (req, res) => {
-    return res.json({
-        currentMatch,
-        queue,
-        leaderboard
-    });
-});
-
-// Start match (only if table empty)
-app.post("/match/start", (req, res) => {
-    if (currentMatch)
-        return res.status(400).json({ error: "Match already running" });
-
-    if (queue.length < 2)
-        return res.status(400).json({ error: "Not enough players" });
-
-    const player1 = queue.shift();
-    const player2 = queue.shift();
-
-    currentMatch = { player1, player2 };
-    return res.json({ currentMatch });
-});
-
-// Submit match result
+// Finish match
 app.post("/match/finish", (req, res) => {
-    const { winner } = req.body;
+  const { winner } = req.body;
+  if (!currentMatch) return res.status(400).json({ error: "No match running" });
 
-    if (!currentMatch)
-        return res.status(400).json({ error: "No match running" });
+  const { player1, player2 } = currentMatch;
+  const loser = winner === player1 ? player2 : player1;
 
-    const { player1, player2 } = currentMatch;
-    const loser = winner === player1 ? player2 : player1;
+  recordResult(winner, loser);
 
-    recordResult(winner, loser);
+  // Remove match from table
+  currentMatch = null;
 
-    // Winner stays → becomes player1 in next match
-    currentMatch = null;
+  // Winner goes to front of queue
+  queue.unshift(winner);
 
-    // Winner goes to queue front
-    queue.unshift(winner);
-
-    return res.json({ message: "Match recorded", leaderboard });
+  res.json({ message: "Match recorded", leaderboard });
 });
 
 // Leaderboard
 app.get("/leaderboard", (req, res) => {
-    return res.json({ leaderboard });
+  const lbArray = Object.entries(leaderboard).map(([studentID, stats]) => ({ studentID, ...stats }));
+  res.json(lbArray);
 });
 
-// Clear everything (admin)
+// Admin reset
 app.post("/reset", (req, res) => {
-    queue = [];
-    currentMatch = null;
-    leaderboard = {};
-    res.json({ message: "Reset complete" });
+  queue = [];
+  currentMatch = null;
+  leaderboard = {};
+  res.json({ message: "Reset complete" });
 });
 
-// --- Start ---
-app.listen(10000, () => console.log("Backend running on port 10000"));
-
+// --- Start Server ---
+const PORT = 10000;
+app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
